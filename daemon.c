@@ -105,7 +105,21 @@ int socket_handle_grab_cb(void * img, unsigned long length, void * extra)
 	int conn_fd = *(int *)extra;
 	printf("send back %d\n", length);
 	int len = htonl(length);
+
+	char response[512];
+	snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\n"
+			                   "Access-Control-Allow-Origin: *\r\n"
+					   "Access-Control-Allow-Methods: PUT,POST,GET,DELETE,OPTIONS\r\n"
+					   "Access-Control-Allow-Credentials: true\r\n"
+					   "Access-Control-Allow-Headers: Content-Type, Accept\r\n"
+                                           "Content-Type: image/jpeg\r\n"
+                                           "Content-Length: %d\r\n\r\n"
+                                           , length);
+#if 1
+	if (send(conn_fd, response, strlen(response), 0) < 0)
+#else
 	if (send(conn_fd, &len, sizeof(len), 0) < 0)
+#endif
 	{
 		perror("send");
 		return -1;
@@ -212,7 +226,6 @@ int main(int argc, char **argv)
 
 	int sock_fd = init_socket();
 	//int mq_fd = init_message_queue();
-	int gpio_fd = init_gpio_btn();
 
 	// Create epoll instance
 	int epoll_fd = epoll_create1(0);
@@ -230,6 +243,8 @@ int main(int argc, char **argv)
 		perror("Failed to add socket to epoll instance");
 		exit(EXIT_FAILURE);
 	}
+
+	int gpio_fd = init_gpio(epoll_fd);
 #if 0
 	// Register message queue with epoll
 	event.data.fd = mq_fd;
@@ -239,7 +254,7 @@ int main(int argc, char **argv)
 		perror("Failed to add message queue to epoll instance");
 		exit(EXIT_FAILURE);
 	}
-#endif
+
 	// Register GPIO
 	event.data.fd = gpio_fd;
 	event.events = EPOLLIN | EPOLLET;
@@ -248,6 +263,7 @@ int main(int argc, char **argv)
 		perror("Failed to add GPIO to epoll instance");
 		exit(EXIT_FAILURE);
 	}
+#endif
 
 	// Main loop
 	int i = 0;
@@ -271,21 +287,21 @@ int main(int argc, char **argv)
 				exit(EXIT_FAILURE);
 			}
 #endif
-
-			if (events[i].data.fd == sock_fd)
-			{
-				handle_socket_accept(epoll_fd, &(events[i]));
-			}
-
-			else if (events[i].data.fd == gpio_fd)
+			if (events[i].data.fd == gpio_fd)
 			{
 				handle_gpio_btn(epoll_fd, &(events[i]));
+			}
+
+			else if (events[i].data.fd == sock_fd)
+			{
+				handle_socket_accept(epoll_fd, &(events[i]));
 			}
 
 			else if (events[i].events & EPOLLIN)
 			{
 				handle_socket_event(epoll_fd, &(events[i]));
 			}
+
 			else {
 				perror("EPOLL ERROR");
 				exit(EXIT_FAILURE);

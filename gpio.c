@@ -8,8 +8,11 @@
 #include <sys/epoll.h>
 #include "daemon.h"
 
-#define GPIO_PIN "11" // set to the desired GPIO pin number
-#define GPIO_LIGHT "6"
+enum GPIO_TYPE {
+	GPIO_BUTTON = 0,
+	GPIO_LIGHT,
+	GPIO_MAX
+};
 
 enum GPIO_DIRECTION {
 	GPIO_DIRECTION_IN = 0,
@@ -41,12 +44,13 @@ const char * GPIO_INT_EDGE_TYPE_STR[] = {
 };
 
 struct gpio {
+	const char * gpio_name;
 	const char * gpio_pin;
 	enum GPIO_DIRECTION gpio_direction;
 	enum GPIO_INT_EDGE_TYPE gpio_int_edge_type;
 	uint8_t gpio_value;
 	int gpio_fd;
-	int (*gpio_handler)(int epoll_fd, struct epoll_event *event)
+	int (*gpio_handler)(int epoll_fd, struct epoll_event *event);
 };
 
 static int pin_value = 0;
@@ -57,6 +61,25 @@ static char * wifi_config_str = NULL;
 static int capture_callback(void * img, unsigned long length, void * extra);
 static int wifi_config();
 static int wifi_config_capture_callback(void * img, unsigned long length, void * extra);
+
+static struct gpio gpios[GPIO_MAX] = {
+    {
+	    .gpio_name = "button",
+	    .gpio_pin = "11",
+	    .gpio_direction = GPIO_DIRECTION_IN,
+	    .gpio_int_edge_type = GPIO_INT_EDGE_BOTH,
+	    .gpio_handler = handle_gpio_btn
+    },
+    {
+	    .gpio_name = "light",
+	    .gpio_pin = "6",
+	    .gpio_direction = GPIO_DIRECTION_OUT,
+	    .gpio_handler = handle_gpio_light
+    }
+};
+
+static struct gpio * gpio_light = &(gpios[GPIO_LIGHT]);
+
 
 int init_gpio2(struct gpio * gpio_p) {
     // export the GPIO pin
@@ -69,7 +92,9 @@ int init_gpio2(struct gpio * gpio_p) {
     memset(dir_path, 0, sizeof(dir_path));
     snprintf(dir_path, sizeof(dir_path), "/sys/class/gpio/gpio%s/direction", gpio_p->gpio_pin);
     int dir_fd = open(dir_path, O_WRONLY);
-    write(dir_fd, gpio_p->gpio_direction, strlen(gpio_p->gpio_direction));
+
+    const char * val = GPIO_DIRECTION_STR[gpio_p->gpio_direction];
+    write(dir_fd, val, strlen(val));
     close(dir_fd);
 
     if (gpio_p->gpio_direction == GPIO_DIRECTION_IN) {
@@ -77,13 +102,13 @@ int init_gpio2(struct gpio * gpio_p) {
 	    memset(dir_path, 0, sizeof(dir_path));
 	    snprintf(dir_path, sizeof(dir_path), "/sys/class/gpio/gpio%s/edge", gpio_p->gpio_pin);
 	    int edge_fd = open(dir_path, O_WRONLY);
-	    write(edge_fd, gpio_p->gpio_int_edge_type, strlen(gpio_p->gpio_int_edge_type));
+	    const char * val = GPIO_INT_EDGE_TYPE_STR[gpio_p->gpio_int_edge_type];
+	    write(edge_fd, val, strlen(val));
 	    close(edge_fd);
     }
 
 
     // open the GPIO file descriptor
-    int gpip_fd = -1;
     char val_path[50];
     snprintf(val_path, sizeof(val_path), "/sys/class/gpio/gpio%s/value", gpio_p->gpio_pin);
 
@@ -99,28 +124,23 @@ int init_gpio2(struct gpio * gpio_p) {
 int init_gpio(int epoll_fd) {
     int ret = 0;
 
-    struct gpio gpio_btn = {
-	    .gpio_pin = "11",
-	    .gpio_direction = GPIO_DIRECTION_IN,
-	    .gpio_int_edge_type = GPIO_INT_EDGE_BOTH,
-            .gpio_handler = handle_gpio_btn
-    };
-    ret = init_gpio2(&gpio_btn);
+    for (unsigned int i = 0; i < sizeof(gpios) / sizeof(gpios[0]); i++) {
+	struct gpio * gpio_p = &(gpios[i]);
+    	ret = init_gpio2(gpio_p);
 
-    struct gpio gpio_light = {
-	    .gpio_pin = "6",
-	    .gpio_direction = GPIO_DIRECTION_OUT,
-            .gpio_handler = handle_gpio_light
-    };
-    ret = init_gpio2(&gpio_light);
+        struct epoll_event event;
 
-    event.data.fd = gpio_fd;
-    event.events = EPOLLIN | EPOLLET;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, gpio_fd, &event) < 0)
-    {
-            perror("Failed to add GPIO to epoll instance");
-            exit(EXIT_FAILURE);
+	if (gpio_p->gpio_direction == GPIO_DIRECTION_IN) {
+		event.data.fd = gpio_p->gpio_fd;
+		event.events = EPOLLIN | EPOLLET;
+		if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, gpio_p->gpio_fd, &event) < 0)
+		{
+			perror("Failed to add GPIO to epoll instance");
+			exit(EXIT_FAILURE);
+		}
+        }
     }
+    return gpios[GPIO_BUTTON].gpio_fd;
 }
 
 int handle_gpio_btn(int epoll_fd, struct epoll_event *event)
@@ -166,12 +186,33 @@ int handle_gpio_btn(int epoll_fd, struct epoll_event *event)
 
 int handle_gpio_light(int epoll_fd, struct epoll_event *event) 
 {
+#if 0
+	int val = epoll_fd;
+	static struct gpio * g = gpio_light;
+
+	if (val == 0) {
+    		write(g->gpio_fd, "0", 1);
+	} else {
+    		write(g->gpio_fd, "1", 1);
+	}
+#else
+    int fd = open("/sys/class/leds/orangepi:red:status/brightness", O_WRONLY);
+    int val = epoll_fd;
+    
+    if (val == 0) {
+    	write(fd, "0", 1);
+    } else {
+    	write(fd, "1", 1);
+    }
+    close(fd);
+
+#endif
 	return 0;
 }
 
 int capture_callback(void * img, unsigned long length, void * extra)
 {
-	FILE *f = fopen("image.jpg", "wb");
+	FILE *f = fopen("/var/www/capture.jpg", "wb");
 	if (!f) {
 		perror("Open file failed");
 	}
@@ -233,15 +274,24 @@ int wifi_config()
 	qr_scan_init();
 	wifi_config_str = NULL;
 
+	int val = 0;
+
 	for (int i = 0; i < 20; i++) {
 		if (wifi_config_str != NULL) {
 			break;
 		}
 
+		val = val ^ 1;
+		handle_gpio_light(val , NULL);
 		printf("scan\n");
 		fswebcam_grab(wifi_config_capture_callback, NULL);
 	}
 	qr_scan_uninit();
+
+	if (NULL == wifi_config_str) {
+		handle_gpio_light(0, NULL);
+		return 0;
+	}
 
 	// TODO Wifi config
 	char ssid[64], password[64], security[8];	
@@ -257,4 +307,6 @@ int wifi_config()
         }
 	
 	wifi_config_str = NULL;
+	handle_gpio_light(0, NULL);
+	return 0;
 }

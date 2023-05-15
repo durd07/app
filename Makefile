@@ -1,7 +1,7 @@
 CC = gcc
 CXX = g++
-CFLAGS = -Wall -Wextra -pedantic -std=c99 -D_POSIX_C_SOURCE=200809L
-CXXFLAGS = -Wall -Wextra -pedantic -std=c++11
+CFLAGS = -g -Wall -Wextra -pedantic -std=c99 -D_POSIX_C_SOURCE=200809L
+CXXFLAGS = -g -Wall -Wextra -pedantic -std=c++11
 LDFLAGS = -lgd -lzbar -I `pkg-config --libs opencv`
 
 # C source files
